@@ -1,9 +1,9 @@
-"""A small, extensible computer-use agent for San Antonio FC.
+"""A small, extensible computer-use agent with a user-provided task.
 
-The important part is the observe -> reason -> act loop.  The initial
-reasoner is deliberately deterministic: it uses the page's rendered text,
-not a private API or hard-coded answer.  A future LLM reasoner can implement
-the same Reasoner protocol and return browser actions.
+The important part is the observe -> reason -> act loop. The initial reasoner
+is deliberately deterministic: it uses rendered page text, not a private API.
+A future LLM reasoner can implement the same Reasoner protocol and handle
+arbitrary tasks supplied by the user.
 """
 from __future__ import annotations
 
@@ -42,11 +42,34 @@ class Reasoner(Protocol):
 
 
 class ScheduleReasoner:
-    """Reason from visible schedule text, with no site-specific API calls."""
+    """Handle the initial SAFC task from visible schedule text."""
     def decide(self, observation: Observation) -> Action:
         if "2026 Schedule" not in observation.text:
             return Action("navigate", SCHEDULE_URL)
         return Action("finish")
+
+
+class TaskReasoner:
+    """Task-aware reasoner placeholder for the next LLM-backed iteration.
+
+    The task is captured now so the public agent interface is no longer tied
+    to a hard-coded target. Until a general reasoner is added, the known SAFC
+    task uses the deterministic implementation and other tasks fail clearly.
+    """
+    def __init__(self, task: str):
+        self.task = task
+
+    def decide(self, observation: Observation) -> Action:
+        if self.task.lower() in {
+            "find san antonio fc's next game",
+            "find san antonio fc’s next game",
+            "find the next san antonio fc game",
+        }:
+            return ScheduleReasoner().decide(observation)
+        raise NotImplementedError(
+            "General text tasks require an LLM reasoner; the initial supported "
+            "task is finding San Antonio FC's next game."
+        )
 
 
 class BrowserComputer:
@@ -135,24 +158,36 @@ def find_next_match(text: str, today: Optional[date] = None) -> Dict[str, str]:
     raise LookupError("No upcoming match was found in the rendered schedule")
 
 
-async def main(headless: bool = False) -> Dict[str, str]:
+async def main(task: str, headless: bool = False) -> Optional[Dict[str, str]]:
+    """Run the browser agent for a task entered by the user."""
     async with async_playwright() as playwright:
         browser: Browser = await playwright.chromium.launch(headless=headless)
         page = await browser.new_page(viewport={"width": 1440, "height": 1000})
         await page.goto("https://www.sanantoniofc.com", wait_until="domcontentloaded")
         computer = BrowserComputer(page)
-        observation = await Agent(computer, ScheduleReasoner()).run()
-        result = find_next_match(observation.text)
-        print(f"\nNext {TEAM_NAME} game: {result['display_date']} at {result['time']}")
-        print(f"Opponent: {result['opponent']}")
-        if result["venue"]:
-            print(f"Venue: {result['venue']}")
+        observation = await Agent(computer, TaskReasoner(task)).run()
+        result = None
+        if task.lower() in {
+            "find san antonio fc's next game",
+            "find san antonio fc’s next game",
+            "find the next san antonio fc game",
+        }:
+            result = find_next_match(observation.text)
+            print(f"\nNext {TEAM_NAME} game: {result['display_date']} at {result['time']}")
+            print(f"Opponent: {result['opponent']}")
+            if result["venue"]:
+                print(f"Venue: {result['venue']}")
         await browser.close()
         return result
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Computer-use agent for the next San Antonio FC game")
+    parser = argparse.ArgumentParser(description="Computer-use AI agent")
     parser.add_argument("--headless", action="store_true", help="run without showing the browser")
+    parser.add_argument("task", nargs="?", help="task to perform; otherwise you will be prompted")
     args = parser.parse_args()
-    asyncio.run(main(headless=args.headless))
+    task = args.task or input("What topic would you like to research? ").strip()
+    if not task:
+        parser.error("a non-empty task is required")
+    print(f"Task: {task}")
+    asyncio.run(main(task, headless=args.headless))
